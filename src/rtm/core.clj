@@ -1,15 +1,15 @@
 (ns rtm.core
-  (:gen-class))
-(require '[ring.middleware.json :refer [wrap-json-response wrap-json-params]]
-         '[ring.util.response :refer [response content-type status]]
-         '[ring.middleware.defaults :refer :all]
-         '[compojure.core :refer :all]
-         '[compojure.route :as route]
-         '[rtm.api :refer [api-routes]]
-         '[ring.adapter.jetty :refer [run-jetty]]
-         '[config.core :refer [env]])
+  (:gen-class)
+  (:require [ring.middleware.json :refer [wrap-json-response wrap-json-params]]
+            [ring.util.response :refer [response content-type status]]
+            [ring.middleware.defaults :refer :all]
+            [compojure.core :refer :all]
+            [compojure.route :as route]
+            [rtm.api :refer [api-routes]]
+            [ring.adapter.jetty :refer [run-jetty]]
+            [config.core :refer [env]]))
 
-(defn mailgun-handler [request]
+(defn mailgun-handler []
   (content-type (response "Hello world") "text/plain"))
 
 (defn wrap-exception [handler json?]

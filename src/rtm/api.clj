@@ -1,30 +1,38 @@
-(ns rtm.api)
-(require '[ring.util.response :refer [response status]]
-         '[clj-http.client :as client]
-         '[compojure.core :refer :all]
-         '[compojure.route :as route]
-         '[cheshire.core :refer :all])
+(ns rtm.api
+  (:require [clojure.string :as str]
+            [ring.util.response :refer [response status]]
+            [clj-http.client :as client]
+            [compojure.core :refer :all]
+            [compojure.route :as route]
+            [cheshire.core :refer :all]))
 
-(def ^:private host-path "https://suuli.spv.fi")
+(def ^:private ^:const host-path "https://suuli.spv.fi")
 
-(def ^:private default-headers
+(def ^:private ^:const default-headers
   {"Accept-Language" "fi,en-US;q=0.9,en;q=0.8"
    "Accept-Encoding" "gzip, deflate, br"
    "Referer" "https://suuli.spv.fi/"
    "Cache-Control" "no-cache"})
 
-(def ^:private suuli-ttl 43200)
+(def ^:private ^:const suuli-ttl 43200)
+
+(def ^:private ^:const path-access
+  {"/berths" (fn [roles] (every? #(contains? roles %) [:berthReader :boatReader :memberReader]))})
 
 (defn- auth-headers [token]
   (assoc default-headers "Authorization" token))
 
 (defn- suuli-login [username password ttl]
-  (get-in (client/post (str host-path "/api/People/login")
-               {:form-params {:username username :password password :ttl ttl}
-                :headers default-headers
-                :content-type :json
-                :accept :json
-                :as :json}) [:body :id]))
+  (let [body (:body (client/post (str host-path "/api/People/login")
+                          {:form-params {:username username :password password :ttl ttl}
+                           :headers default-headers
+                           :content-type :json
+                           :accept :json
+                           :as :json}))]
+    {:token (:id body)
+     :role-names (set (map #(keyword %) (str/split (:roleNames body) #";")))}))
+
+
 
 (defn- get-berths [token]
   (let [resp (client/get (str host-path "/api/Berths/search?query=" (generate-string {:clubId 138 :berthNumber ""}))
@@ -42,28 +50,35 @@
     (let [session (:session request)
           {:keys [username password issued]} session]
       (cond
-        (or (nil? username) (nil? password) (nil? issued)) (status (response {:message "No session"}) 401)
+        (not (and username password issued)) (status (response {:message "No session"}) 401)
 
         (> (- (System/currentTimeMillis) issued) (* suuli-ttl 1000))
         (do
           (prn "Suuli session expired. Refreshing..")
-          (let [new-session (assoc session
-                              :token (suuli-login username password suuli-ttl)
-                              :issued (System/currentTimeMillis))]
+          (let [new-session (merge (assoc session :issued (System/currentTimeMillis))
+                                   (suuli-login username password suuli-ttl))]
             (->
               (handler (assoc request :session new-session))
               (assoc :session new-session))))
 
         :else (handler request)))))
 
+(defn- wrap-role-check [handler]
+  (fn [request]
+    (let [roles (get-in request [:session :role-names])
+          path (:path-info request)]
+      (if ((path-access path) roles)
+        (handler request)
+        (status (response {:error "Access denied"}) 403)))))
+
 (defn- login [username password session]
   (if (not (or (nil? username) (nil? password)))
 
-    (let [session (assoc session
-                    :username username
-                    :password password
-                    :token (suuli-login username password suuli-ttl)
-                    :issued (System/currentTimeMillis))]
+    (let [session (merge (assoc session
+                           :username username
+                           :password password
+                           :issued (System/currentTimeMillis))
+                         (suuli-login username password suuli-ttl))]
       (-> (status (response {}) 204)
           (assoc :session (vary-meta session assoc :recreate true))))
 
@@ -76,5 +91,8 @@
 (defroutes api-routes
            (POST "/login" [username password :as {session :session}]
              (login username password session))
-           (wrap-suuli-session session-routes)
+           (->
+             session-routes
+             (wrap-role-check)
+             (wrap-suuli-session))
            (route/not-found (response {:error "Not Found"})))
